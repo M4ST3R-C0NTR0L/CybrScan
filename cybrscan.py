@@ -32,8 +32,34 @@ except ImportError:
     sys.exit(1)
 
 
-DEFAULT_MODEL = "google/gemini-2.5-flash"
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_MODEL = "kimi"
+PROVIDERS = {
+    "kimi": {
+        "url": "http://127.0.0.1:18791/coding/v1/chat/completions",
+        "model": "kimi-latest",
+        "key_path": ["models", "providers", "kimi-code", "apiKey"],
+        "supports_reasoning": True,
+        "cost": "$0 (included in $39/mo subscription)",
+    },
+    # OpenRouter models — use --provider openrouter --model <model-id>
+    "openrouter": {
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "model": "google/gemini-2.5-flash",
+        "key_path": ["models", "providers", "openrouter", "apiKey"],
+        "supports_reasoning": False,
+        "cost": "varies by model",
+    },
+}
+
+# Recommended models for OpenRouter (--provider openrouter)
+RECOMMENDED_MODELS = {
+    "gemini-flash-lite": {"id": "google/gemini-2.5-flash-lite", "cost": "~$0.001/scan", "quality": "⭐⭐⭐", "speed": "fastest"},
+    "gemini-flash": {"id": "google/gemini-2.5-flash", "cost": "~$0.003/scan", "quality": "⭐⭐⭐⭐", "speed": "fast"},
+    "gemini-3-flash": {"id": "google/gemini-3-flash-preview", "cost": "~$0.005/scan", "quality": "⭐⭐⭐⭐⭐", "speed": "fast"},
+    "gemini-3.1-flash-lite": {"id": "google/gemini-3.1-flash-lite-preview", "cost": "~$0.003/scan", "quality": "⭐⭐⭐⭐", "speed": "fast"},
+    "gemini-pro": {"id": "google/gemini-2.5-pro", "cost": "~$0.02/scan", "quality": "⭐⭐⭐⭐⭐", "speed": "slower"},
+    "gpt-4o": {"id": "openai/gpt-4o", "cost": "~$0.03/scan", "quality": "⭐⭐⭐⭐⭐", "speed": "medium"},
+}
 
 SYSTEM_PROMPT = """You are CybrScan, an expert website analyst and developer consultant. You inspect websites visually and technically to find issues and suggest improvements.
 
@@ -179,12 +205,35 @@ async def capture_page(url: str, width: int = 1280, height: int = 800, mobile: b
         }
 
 
-async def analyze(capture: dict, model: str = DEFAULT_MODEL, api_key: str = None):
-    """Send captured data to OpenRouter for AI analysis."""
+def _load_key(key_path: list) -> str:
+    """Load API key from OpenClaw config."""
+    config_path = os.path.expanduser("~/.openclaw/openclaw.json")
+    if not os.path.exists(config_path):
+        return None
+    with open(config_path) as f:
+        data = json.load(f)
+    node = data
+    for k in key_path:
+        if isinstance(node, dict) and k in node:
+            node = node[k]
+        else:
+            return None
+    return node if isinstance(node, str) else None
+
+
+async def analyze(capture: dict, model: str = DEFAULT_MODEL, api_key: str = None,
+                  provider: str = "kimi"):
+    """Send captured data to an AI vision model for analysis."""
+    prov = PROVIDERS.get(provider)
+    if not prov:
+        raise ValueError(f"Unknown provider: {provider}. Use: {', '.join(PROVIDERS.keys())}")
+
     if not api_key:
-        api_key = os.environ.get("OPENROUTER_API_KEY")
+        api_key = os.environ.get("OPENROUTER_API_KEY") if provider == "openrouter" else None
     if not api_key:
-        raise ValueError("Set OPENROUTER_API_KEY env var or pass --api-key")
+        api_key = _load_key(prov["key_path"])
+    if not api_key:
+        raise ValueError(f"No API key found for {provider}. Set it in OpenClaw config or pass --api-key")
 
     s = capture["stats"]
 
@@ -231,17 +280,23 @@ async def analyze(capture: dict, model: str = DEFAULT_MODEL, api_key: str = None
         ]},
     ]
 
+    # Use the specified model or provider default
+    actual_model = model if model != DEFAULT_MODEL else prov["model"]
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    if provider == "openrouter":
+        headers["HTTP-Referer"] = "https://github.com/M4ST3R-C0NTR0L/CybrScan"
+        headers["X-Title"] = "CybrScan"
+
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(
-            OPENROUTER_URL,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/M4ST3R-C0NTR0L/CybrScan",
-                "X-Title": "CybrScan",
-            },
+            prov["url"],
+            headers=headers,
             json={
-                "model": model,
+                "model": actual_model,
                 "messages": messages,
                 "max_tokens": 4096,
                 "temperature": 0.3,
@@ -249,17 +304,31 @@ async def analyze(capture: dict, model: str = DEFAULT_MODEL, api_key: str = None
         )
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        msg = data["choices"][0]["message"]
+
+        # Kimi puts analysis in reasoning_content
+        content = msg.get("content", "") or ""
+        reasoning = msg.get("reasoning_content", "") or ""
+
+        if content.strip():
+            return content
+        elif reasoning.strip():
+            return reasoning
+        else:
+            return "No analysis returned from model."
 
 
 async def scan(url: str, model: str = DEFAULT_MODEL, api_key: str = None,
                save_dir: str = None, mobile: bool = False,
-               width: int = 1280, height: int = 800):
+               width: int = 1280, height: int = 800, provider: str = "kimi"):
     """Full pipeline: capture → analyze → report."""
+    prov = PROVIDERS.get(provider, PROVIDERS["kimi"])
+    actual_model = model if model != DEFAULT_MODEL else prov["model"]
     mode = "📱 Mobile" if mobile else "🖥️  Desktop"
     print(f"🔍 CybrScan — {mode}")
     print(f"🌐 {url}")
-    print(f"🤖 Model: {model}")
+    print(f"🤖 Provider: {provider} | Model: {actual_model}")
+    print(f"💰 Cost: {prov['cost']}")
     print(f"📸 Capturing...")
 
     capture = await capture_page(url, width=width, height=height, mobile=mobile)
@@ -281,13 +350,13 @@ async def scan(url: str, model: str = DEFAULT_MODEL, api_key: str = None,
             (out / "accessibility.json").write_text(json.dumps(capture["accessibility"], indent=2))
         print(f"💾 Saved to {out}/")
 
-    print(f"🧠 Analyzing...")
-    analysis = await analyze(capture, model=model, api_key=api_key)
+    print(f"🧠 Analyzing with {provider}...")
+    analysis = await analyze(capture, model=model, api_key=api_key, provider=provider)
 
     sep = "=" * 60
     print(f"\n{sep}")
     print(f"🔍 CybrScan Report: {url}")
-    print(f"🤖 Model: {model} | {mode}")
+    print(f"🤖 {provider} / {actual_model} | {mode}")
     print(f"{sep}\n")
     print(analysis)
 
@@ -296,7 +365,8 @@ async def scan(url: str, model: str = DEFAULT_MODEL, api_key: str = None,
         report.write_text(
             f"# CybrScan Report\n\n"
             f"**URL:** {url}\n"
-            f"**Model:** {model}\n"
+            f"**Provider:** {provider}\n"
+            f"**Model:** {actual_model}\n"
             f"**Mode:** {mode}\n"
             f"**Load Time:** {s['loadTime']}s\n\n"
             f"---\n\n{analysis}\n"
@@ -312,29 +382,40 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python3 cybrscan.py https://example.com
-  python3 cybrscan.py https://mysite.dev --model google/gemini-3-flash-preview
-  python3 cybrscan.py https://mysite.dev --save ./reports/mysite
-  python3 cybrscan.py https://mysite.dev --mobile
-  python3 cybrscan.py https://mysite.dev --model google/gemini-2.5-flash-lite  (cheapest)
+  cybrscan.py https://example.com                          # Kimi (default, $0)
+  cybrscan.py https://example.com --mobile                 # Mobile viewport
+  cybrscan.py https://example.com --save ./reports/mysite  # Save artifacts
+  cybrscan.py https://example.com -p openrouter            # Use OpenRouter (Gemini Flash)
+  cybrscan.py https://example.com -p openrouter -m google/gemini-2.5-pro  # Specific model
+  cybrscan.py --list-models                                # Show all recommended models
 
-Models (via OpenRouter):
-  google/gemini-2.5-flash          $0.30/$2.50 per 1M tokens (default, best value)
-  google/gemini-2.5-flash-lite     $0.10/$0.40 per 1M tokens (cheapest)
-  google/gemini-3-flash-preview    $0.50/$3.00 per 1M tokens (newest)
-  google/gemini-2.5-pro            $1.25/$10   per 1M tokens (best quality)
-  openai/gpt-4o                    $2.50/$10   per 1M tokens (strong vision)
+Providers:
+  kimi         Default. Uses Kimi Code API ($0 extra, included in subscription)
+  openrouter   Any model via OpenRouter. Default: Gemini 2.5 Flash (~$0.003/scan)
         """,
     )
     parser.add_argument("url", help="URL to scan")
-    parser.add_argument("--model", "-m", default=DEFAULT_MODEL, help=f"OpenRouter model ID (default: {DEFAULT_MODEL})")
-    parser.add_argument("--api-key", "-k", help="OpenRouter API key (or set OPENROUTER_API_KEY)")
+    parser.add_argument("--provider", "-p", default="kimi",
+                        choices=list(PROVIDERS.keys()),
+                        help="AI provider (default: kimi)")
+    parser.add_argument("--model", "-m", default=DEFAULT_MODEL,
+                        help="Model ID (default: provider's default)")
+    parser.add_argument("--api-key", "-k", help="API key (auto-loaded from OpenClaw config)")
     parser.add_argument("--save", "-s", help="Save screenshots + report to this directory")
     parser.add_argument("--mobile", action="store_true", help="Simulate iPhone viewport")
     parser.add_argument("--width", type=int, default=1280, help="Desktop viewport width")
     parser.add_argument("--height", type=int, default=800, help="Desktop viewport height")
+    parser.add_argument("--list-models", action="store_true", help="Show recommended models")
 
     args = parser.parse_args()
+
+    if args.list_models:
+        print("\n🤖 Recommended Models (via OpenRouter):\n")
+        for alias, info in RECOMMENDED_MODELS.items():
+            print(f"  {alias:25s} {info['id']:45s} {info['cost']:15s} {info['quality']} {info['speed']}")
+        print(f"\n💡 Default provider: kimi (included in subscription, $0 extra)")
+        print(f"   Use: --provider openrouter --model <model-id>")
+        sys.exit(0)
 
     asyncio.run(scan(
         url=args.url,
@@ -344,6 +425,7 @@ Models (via OpenRouter):
         mobile=args.mobile,
         width=args.width,
         height=args.height,
+        provider=args.provider,
     ))
 
 
