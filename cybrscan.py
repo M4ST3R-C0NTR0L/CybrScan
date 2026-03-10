@@ -144,7 +144,25 @@ async def capture_page(url: str, width: int = 1280, height: int = 800, mobile: b
             print(f"⚠️  Page load: {e}", file=sys.stderr)
         load_time = round(time.time() - t0, 2)
 
-        # Let animations settle
+        # Scroll through entire page to trigger lazy-load + scroll animations
+        await page.evaluate("""async () => {
+            const delay = ms => new Promise(r => setTimeout(r, ms));
+            const scrollHeight = document.body.scrollHeight;
+            const viewportHeight = window.innerHeight;
+            let currentPos = 0;
+            while (currentPos < scrollHeight) {
+                window.scrollTo(0, currentPos);
+                currentPos += viewportHeight * 0.8;
+                await delay(300);
+            }
+            // Scroll to bottom then back to top
+            window.scrollTo(0, scrollHeight);
+            await delay(500);
+            window.scrollTo(0, 0);
+            await delay(500);
+        }""")
+
+        # Let animations settle after scroll
         await page.wait_for_timeout(2000)
 
         # Full page screenshot
