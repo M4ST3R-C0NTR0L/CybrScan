@@ -4,8 +4,6 @@
 
 CybrScan uses Playwright to open websites like a real browser, captures screenshots and technical data, then sends everything to an AI vision model for deep analysis — design, UX, conversion, SEO, accessibility, and code quality.
 
-Works with any LLM via [OpenRouter](https://openrouter.ai). Default: Gemini 2.5 Flash (~$0.003 per scan).
-
 ## Quick Start
 
 ```bash
@@ -13,21 +11,49 @@ Works with any LLM via [OpenRouter](https://openrouter.ai). Default: Gemini 2.5 
 pip3 install httpx playwright
 python3 -m playwright install chromium
 
-# Set your OpenRouter key
-export OPENROUTER_API_KEY=sk-or-v1-your-key
-
-# Scan a site
+# Scan a site (uses Kimi by default — $0 if you have a subscription)
 python3 cybrscan.py https://example.com
 
 # Save screenshots + report
 python3 cybrscan.py https://mysite.dev --save ./reports/mysite
 
-# Mobile view
+# Mobile view (iPhone simulation)
 python3 cybrscan.py https://mysite.dev --mobile
 
-# Use a different model
-python3 cybrscan.py https://mysite.dev --model google/gemini-3-flash-preview
+# Use OpenRouter instead (any model)
+export OPENROUTER_API_KEY=sk-or-v1-your-key
+python3 cybrscan.py https://mysite.dev --provider openrouter
+
+# Specific OpenRouter model
+python3 cybrscan.py https://mysite.dev -p openrouter -m google/gemini-3-flash-preview
+
+# List recommended models
+python3 cybrscan.py --list-models
 ```
+
+## Providers
+
+### Kimi (Default)
+Uses Kimi Code API with vision support. **$0 extra** if you have a Kimi subscription ($39/mo).
+- Auto-loads API key from OpenClaw config
+- Great quality for website analysis
+- 262K context window
+
+### OpenRouter (Any Model)
+Access 300+ models via [OpenRouter](https://openrouter.ai). Set `OPENROUTER_API_KEY` or it auto-loads from OpenClaw config.
+
+**Recommended Models:**
+
+| Model | Cost/scan | Quality | Best For |
+|-------|-----------|---------|----------|
+| `google/gemini-2.5-flash-lite` | ~$0.001 | ⭐⭐⭐ | Bulk scanning, quick checks |
+| `google/gemini-2.5-flash` | ~$0.003 | ⭐⭐⭐⭐ | Daily use, best value |
+| `google/gemini-3-flash-preview` | ~$0.005 | ⭐⭐⭐⭐⭐ | Newest Google, great detail |
+| `google/gemini-3.1-flash-lite-preview` | ~$0.003 | ⭐⭐⭐⭐ | New + cheap |
+| `google/gemini-2.5-pro` | ~$0.02 | ⭐⭐⭐⭐⭐ | Deep analysis, client reports |
+| `openai/gpt-4o` | ~$0.03 | ⭐⭐⭐⭐⭐ | Best vision overall |
+
+💡 **Our pick:** Start with **Kimi** (free). Use **Gemini 2.5 Flash** via OpenRouter for second opinions. Use **GPT-4o** for client-facing reports.
 
 ## What It Analyzes
 
@@ -35,36 +61,57 @@ python3 cybrscan.py https://mysite.dev --model google/gemini-3-flash-preview
 - **UX & Conversion** — CTAs, navigation, forms, trust signals, user flow
 - **Technical** — meta tags, OG tags, console errors, accessibility, performance
 - **Content** — copy quality, value proposition, information architecture
+- **SEO** — heading structure, schema markup, social sharing tags
 
-Every issue gets a severity rating and a specific, actionable fix.
-
-## Models (via OpenRouter)
-
-| Model | Cost/scan | Quality | Speed |
-|-------|-----------|---------|-------|
-| `google/gemini-2.5-flash` | ~$0.003 | ⭐⭐⭐⭐ | Fast |
-| `google/gemini-2.5-flash-lite` | ~$0.001 | ⭐⭐⭐ | Fastest |
-| `google/gemini-3-flash-preview` | ~$0.005 | ⭐⭐⭐⭐⭐ | Fast |
-| `google/gemini-2.5-pro` | ~$0.02 | ⭐⭐⭐⭐⭐ | Slower |
-| `openai/gpt-4o` | ~$0.03 | ⭐⭐⭐⭐⭐ | Medium |
-
-Default is Gemini 2.5 Flash — best balance of quality, speed, and cost.
+Every issue gets a severity rating (🔴 Critical → 💡 Suggestion) and a specific, actionable fix with code snippets.
 
 ## Output
 
 Each scan produces:
 - Full-page screenshot (PNG)
 - Viewport screenshot (above the fold)
-- Accessibility tree snapshot
-- Page stats (word count, images, links, forms, meta tags, OG tags, schema)
+- Accessibility tree snapshot (JSON)
+- Page stats — words, images, links, forms, meta tags, OG tags, schema (JSON)
 - Console errors
 - AI analysis report (Markdown)
+
+## How It Works
+
+```
+URL → Playwright Browser → Screenshot + DOM + Stats → AI Vision Model → Report
+```
+
+1. Opens the page in a real Chromium browser
+2. Waits for network idle + animations to settle
+3. Captures full-page + viewport screenshots
+4. Extracts accessibility tree, meta tags, OG tags, stats
+5. Collects console errors/warnings
+6. Sends viewport screenshot + all data to AI vision model
+7. Returns prioritized findings with severity + fixes
 
 ## Requirements
 
 - Python 3.9+
 - Chromium (installed via Playwright)
-- OpenRouter API key ([get one free](https://openrouter.ai))
+- API key: Kimi Code subscription OR [OpenRouter key](https://openrouter.ai/keys)
+
+## Adding Your Own Provider
+
+Edit the `PROVIDERS` dict in `cybrscan.py`:
+
+```python
+PROVIDERS = {
+    "my-provider": {
+        "url": "https://api.example.com/v1/chat/completions",
+        "model": "my-model-id",
+        "key_path": ["models", "providers", "my-provider", "apiKey"],  # OpenClaw config path
+        "supports_reasoning": False,
+        "cost": "$X per scan",
+    },
+}
+```
+
+Any OpenAI-compatible API that supports vision (image_url in messages) will work.
 
 ## License
 
